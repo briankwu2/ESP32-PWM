@@ -23,11 +23,14 @@ The states being:
 #define ledR 16
 #define ledG 17
 #define ledB 18
+#define STATE_FADE_IN_DELAY 3 // 3 Seconds
+#define STATE_STEADY_ON_DELAY 6 // 6 Seconds
+#define STATE_FADE_OUT_DELAY 4  // 4 Seconds
 
 #define TIMER_SELECT 0 // Select timer 0 out of 0-3
 #define TIMER_DIVISION 80 // Set to divide by 80. 80MHZ is clock speed
 #define TIMER_MODE 1 // Set to "up" or "true"
-
+#define TIMER_PARTITION 256 // Partitions 1 second into this many partitions
 // Defines an enum STATE_T that can contain 5 states.
 typedef enum
 {
@@ -38,7 +41,7 @@ typedef enum
 } STATE_T;
 
 // Function Prototypes
-static void turnLEDtoHue(uint8_t red, uint8_t green, uint8_t blue);
+void turnLEDtoHue(uint8_t red, uint8_t green, uint8_t blue);
 void IRAM_ATTR handle_state();
 void IRAM_ATTR debounceHandle_state();
 
@@ -49,7 +52,7 @@ volatile static STATE_T state = STATE_OFF;
 volatile unsigned long lastDebounceTime = 0;
 static int numHandles = 0;
 hw_timer_t * timer = NULL;
- 
+volatile static int timePartition = 0;
 
 void setup()
 {
@@ -59,7 +62,7 @@ void setup()
 
     Serial.println("\nBooting up ESP32...");
     
-    timer = timerBegin(0,80,true); // Instantiate the timer. Set the clock speed to 80MHz / 80 = 1MHz
+    timer = timerBegin(TIMER_SELECT,TIMER_DIVISION, TIMER_MODE); // Instantiate the timer. Set the clock speed to 80MHz / 80 = 1MHz
                                    // Use timer 0
 
     ledcAttachPin(ledR, 1); // assign RGB led pins to channels
@@ -77,50 +80,56 @@ void setup()
     ledcSetup(3, 12000, 8);
 
     pinMode(interruptPin, INPUT_PULLUP); // The switch is always "1", until pressed which will turn it "0"
-
     attachInterrupt(digitalPinToInterrupt(interruptPin), debounceHandle_state, RISING);
+    timerAttachInterrupt(timer, &timerInterrupt, true); // Set a timer interrupt timer to update time partition. Autoreloads
+    timerAlarmWrite(timer, 1000000/ TIMER_PARTITION, true); // Set the timer interrupt to trigger every 1/256 of a second.
     turnLEDtoHue(0, 0, 0);            // Sets the color to "off"
-
 }
 
 void loop()
 {
     // put your main code here, to run repeatedly:
-
-    // Debugging code to make sure that the interrupt is not called several times because of switch bouncing
-    // Serial.print("The State is: ");
-    // Serial.println(state);
-    // Serial.print("The number of times handle_state has been called is: ");
-    // Serial.println(numHandles);
-    // delay(500);
     switch (state)
     {
     case STATE_OFF:
         turnLEDtoHue(0, 0, 0); // Turns the LED OFF
         break;
     case STATE_FADE_IN:
-        // 
-        // Set time interrupt function
+        if (!timerAlarmEnabled)
+            timerAlarmEnable(timer); // Starts the timer interrupt 
+        if (timePartition <= 256 * STATE_FADE_IN_DELAY)
+        {
+            turnLEDtoHue(0,0,timePartition / STATE_FADE_IN_DELAY);
+            Serial.print("The time partition is ");
+            Serial.println(timePartition);
+        }
+        else if (timePartition > 256 * STATE_FADE_IN_DELAY)
+        {
+            handle_state(); // Change to next state after the delay has passed 
+        }
         break;
     case STATE_STEADY_ON:
+        Serial.print("The state is now in STEADY_ON");
+        delay(5000);
         break;
     case STATE_FADE_OUT:
         break;
+    }
+
+    // Code to test hw_timer_t
 }
 
 // Turns the value into RGB. Turns on the LED
-static void turnLEDtoHue(uint8_t red, uint8_t green, uint8_t blue)
+void turnLEDtoHue(uint8_t red, uint8_t green, uint8_t blue)
 {
     ledcWrite(1, 255 - red);
     ledcWrite(2, 255 - green);
     ledcWrite(3, 255 - blue);
 }
 
-static void fadeLedin(uint8_t red, uint8_t green, uint8_t blue, )
+void IRAM_ATTR timerInterrupt() 
 {
-
-    
-
+    timePartition++; // Updates the timer to count 1/TIMER_PARTITION of a second. (1/256 in this case)
 }
 
 // Primary Interrupt function to handle switch bouncing (switch noise)
@@ -142,10 +151,10 @@ void IRAM_ATTR handle_state()
     switch (state)
     {
     case STATE_OFF:
-        state = STATE_ON;
+        state = STATE_FADE_IN;
         break;
     case STATE_FADE_IN:
-        state = STATE_FLASHING;
+        state = STATE_STEADY_ON;
         break;
     case STATE_STEADY_ON:
         state = STATE_FADE_OUT;
