@@ -44,15 +44,13 @@ typedef enum
 void turnLEDtoHue(uint8_t red, uint8_t green, uint8_t blue);
 void IRAM_ATTR handle_state();
 void IRAM_ATTR debounceHandle_state();
+void IRAM_ATTR timerInterrupt();
 
 // Global Variables
-// RTC_DATA_ATTR qualifier so that the data will be saved within the RTC memory, which means that it will be able
-// to accessed in deep sleep mode
-volatile static STATE_T state = STATE_OFF;
+volatile static STATE_T state; 
 volatile unsigned long lastDebounceTime = 0;
-static int numHandles = 0;
 hw_timer_t * timer = NULL;
-volatile static int timePartition = 0;
+volatile static int timePartition; 
 
 void setup()
 {
@@ -60,8 +58,14 @@ void setup()
     Serial.begin(115200);
     delay(10);
 
+
     Serial.println("\nBooting up ESP32...");
     
+    pinMode(interruptPin, INPUT_PULLUP); // The switch is always "1", until pressed which will turn it "0"
+    delay(1000); // To prevent handle_state from being accidentally called because it senses "rising edge"
+
+    attachInterrupt(digitalPinToInterrupt(interruptPin), debounceHandle_state, RISING);
+
     timer = timerBegin(TIMER_SELECT,TIMER_DIVISION, TIMER_MODE); // Instantiate the timer. Set the clock speed to 80MHz / 80 = 1MHz
                                    // Use timer 0
 
@@ -79,46 +83,74 @@ void setup()
     ledcSetup(2, 12000, 8);
     ledcSetup(3, 12000, 8);
 
-    pinMode(interruptPin, INPUT_PULLUP); // The switch is always "1", until pressed which will turn it "0"
-    attachInterrupt(digitalPinToInterrupt(interruptPin), debounceHandle_state, RISING);
     timerAttachInterrupt(timer, &timerInterrupt, true); // Set a timer interrupt timer to update time partition. Autoreloads
     timerAlarmWrite(timer, 1000000/ TIMER_PARTITION, true); // Set the timer interrupt to trigger every 1/256 of a second.
     turnLEDtoHue(0, 0, 0);            // Sets the color to "off"
+
+    state = STATE_OFF;
+    timePartition = 0;
 }
 
 void loop()
 {
-    // put your main code here, to run repeatedly:
     switch (state)
     {
-    case STATE_OFF:
-        turnLEDtoHue(0, 0, 0); // Turns the LED OFF
-        break;
-    case STATE_FADE_IN:
-        if (!timerAlarmEnabled)
-            timerAlarmEnable(timer); // Starts the timer interrupt 
-        if (timePartition <= 256 * STATE_FADE_IN_DELAY)
-        {
-            turnLEDtoHue(0,0,timePartition / STATE_FADE_IN_DELAY);
-            Serial.print("The time partition is ");
-            Serial.println(timePartition);
-        }
-        else if (timePartition > 256 * STATE_FADE_IN_DELAY)
-        {
-            handle_state(); // Change to next state after the delay has passed 
-        }
-        break;
-    case STATE_STEADY_ON:
-        Serial.print("The state is now in STEADY_ON");
-        delay(5000);
-        break;
-    case STATE_FADE_OUT:
-        break;
+        case STATE_OFF:
+            turnLEDtoHue(0, 0, 0); // Turns the LED OFF
+            break;
+        case STATE_FADE_IN:
+            if (!timerAlarmEnabled(timer))
+                timerAlarmEnable(timer); // Starts the timer interrupt 
+            if (timePartition <= 256 * STATE_FADE_IN_DELAY)
+            {
+                turnLEDtoHue(0,0,(timePartition / STATE_FADE_IN_DELAY) - 1);
+            }
+            else if (timePartition > 256 * STATE_FADE_IN_DELAY)
+            {
+                timerAlarmDisable(timer);
+                timePartition = 0;
+                handle_state(); // Change to next state after the delay has passed 
+            }
+            break;
+        case STATE_STEADY_ON:
+            if (!timerAlarmEnabled(timer))
+                timerAlarmEnable(timer); // Starts the timer interrupt 
+            if (timePartition <= 256 * STATE_STEADY_ON_DELAY)
+            {
+                turnLEDtoHue(0,0, 255);
+            }
+            else if (timePartition > 256 * STATE_STEADY_ON_DELAY)
+            {
+                timerAlarmDisable(timer);
+                timePartition = 0;
+                handle_state(); // Change to next state after the delay has passed 
+            }
+            break;
+        case STATE_FADE_OUT:
+            if (!timerAlarmEnabled(timer))
+                timerAlarmEnable(timer); // Starts the timer interrupt 
+            if (timePartition <= 256 * STATE_FADE_OUT_DELAY)
+            {
+                turnLEDtoHue(0,0, (255 - timePartition / STATE_FADE_OUT_DELAY));
+            }
+            else if (timePartition > 256 * STATE_FADE_OUT_DELAY)
+            {
+                timerAlarmDisable(timer);
+                timePartition = 0;
+                handle_state(); // Change to next state after the delay has passed 
+            }
+            break;
+        default:;
     }
 
     // Code to test hw_timer_t
 }
 
+
+// Next Objective:
+//- Find out wtf is making the state turn to 1 already instead of starting out at 0.
+// Find out why timePartition isn't setting the right value to 0.
+// Double check that the fade in is working properly
 // Turns the value into RGB. Turns on the LED
 void turnLEDtoHue(uint8_t red, uint8_t green, uint8_t blue)
 {
@@ -129,13 +161,15 @@ void turnLEDtoHue(uint8_t red, uint8_t green, uint8_t blue)
 
 void IRAM_ATTR timerInterrupt() 
 {
+    noInterrupts();
     timePartition++; // Updates the timer to count 1/TIMER_PARTITION of a second. (1/256 in this case)
+    interrupts();
 }
 
-// Primary Interrupt function to handle switch bouncing (switch noise)
 // IRAM_ATTR stores the function in flash ram so it is fast as possible
 void IRAM_ATTR debounceHandle_state()
 {
+    noInterrupts();
     // Makes it so that the actual interrupt function will not be called until a certain delay
     // has passed between the last bounce
     if ((millis() - lastDebounceTime) >= PRESS_DELAY)
@@ -143,6 +177,7 @@ void IRAM_ATTR debounceHandle_state()
         handle_state();
         lastDebounceTime = millis();
     }
+    interrupts();
 }
 
 // Actual interrupt function that switches the states.
@@ -163,11 +198,5 @@ void IRAM_ATTR handle_state()
         state = STATE_OFF;
         break;
     }
-
-    numHandles++; // Counts the number of times this function is called for debugging purposes
-    Serial.print("The number of times the handle_state function has been called is: ");
-    Serial.println(numHandles);
-    Serial.print("The new state is at ");
-    Serial.println(state);
 }
 
