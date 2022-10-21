@@ -31,6 +31,7 @@ The states being:
 #define TIMER_DIVISION 80 // Set to divide by 80. 80MHZ is clock speed
 #define TIMER_MODE 1 // Set to "up" or "true"
 #define TIMER_PARTITION 256 // Partitions 1 second into this many partitions
+
 // Defines an enum STATE_T that can contain 5 states.
 typedef enum
 {
@@ -57,8 +58,6 @@ void setup()
     // put your setup code here, to run once:
     Serial.begin(115200);
     delay(10);
-
-
     Serial.println("\nBooting up ESP32...");
     
     pinMode(interruptPin, INPUT_PULLUP); // The switch is always "1", until pressed which will turn it "0"
@@ -72,10 +71,6 @@ void setup()
     ledcAttachPin(ledR, 1); // assign RGB led pins to channels
     ledcAttachPin(ledG, 2);
     ledcAttachPin(ledB, 3);
-
-    // Initialize channels
-    // channels 0-15, resolution 1-16 bits, freq limits depend on resolution
-    // ledcSetup(uint8_t channel, uint32_t freq, uint8_t resolution_bits);
 
     // Sets up the ability to range in values from 0 - 255 in resolution.
     // Sets up the frequency as well.
@@ -91,6 +86,10 @@ void setup()
     timePartition = 0;
 }
 
+/**
+ * @brief Main loop that performs a different function based on the current state.
+ * Read the program synopsis for more information on what the states do.
+ */
 void loop()
 {
     switch (state)
@@ -147,18 +146,24 @@ void loop()
 }
 
 
-// Next Objective:
-//- Find out wtf is making the state turn to 1 already instead of starting out at 0.
-// Find out why timePartition isn't setting the right value to 0.
-// Double check that the fade in is working properly
-// Turns the value into RGB. Turns on the LED
+/**
+ * @brief Turns the value into RGB. Turns on the LED to the specified value of RGB. Ranges from 0 to 256
+ * 
+ * @param red Turns on the red LED to the specified parameter
+ * @param green Turns on the green LED to the specified parameter
+ * @param blue Turns on the blue LED to the specified parameter
+ */
 void turnLEDtoHue(uint8_t red, uint8_t green, uint8_t blue)
 {
-    ledcWrite(1, 255 - red);
-    ledcWrite(2, 255 - green);
-    ledcWrite(3, 255 - blue);
+    ledcWrite(1, 256 - red);
+    ledcWrite(2, 256 - green);
+    ledcWrite(3, 256 - blue);
 }
 
+/**
+ * @brief 
+ * Timer interrupt function that counts every 1/TIMER_PARTITION of a second. Occurs every 1MHz / TIMER_PARTITION second(s).
+ */
 void IRAM_ATTR timerInterrupt() 
 {
     noInterrupts();
@@ -166,7 +171,9 @@ void IRAM_ATTR timerInterrupt()
     interrupts();
 }
 
-// IRAM_ATTR stores the function in flash ram so it is fast as possible
+/**
+ * @brief Is the button interrupt function that debounces the button, and then calls the real interrupt function.
+ */
 void IRAM_ATTR debounceHandle_state()
 {
     noInterrupts();
@@ -180,7 +187,10 @@ void IRAM_ATTR debounceHandle_state()
     interrupts();
 }
 
-// Actual interrupt function that switches the states.
+/**
+ * @brief Changes the state according to the current state.
+ * 
+ */
 void IRAM_ATTR handle_state()
 {
     switch (state)
